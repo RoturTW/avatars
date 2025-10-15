@@ -64,12 +64,6 @@ func bannerHandler(c *gin.Context) {
 }
 
 func uploadBannerHandler(c *gin.Context) {
-	clientIP := c.ClientIP()
-	if clientIP != "127.0.0.1" && clientIP != "::1" && clientIP != "localhost" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "This endpoint can only be accessed locally"})
-		return
-	}
-
 	var req UploadRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON data"})
