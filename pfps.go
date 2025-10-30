@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,13 +53,39 @@ func avatarHandler(c *gin.Context) {
 	contentType := "image/jpeg"
 	finalEtag := etag
 
+	img, _, err := image.Decode(bytes.NewReader(imageData))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decoding image"})
+		return
+	}
+
+	width := img.Bounds().Dx()
+
+	size := width
+
+	if width > 256 {
+		user, err := getUserBy(username)
+		if err == nil {
+			maxSize, err := strconv.ParseInt(toString(user.MaxSize), 10, 64)
+			if err == nil || maxSize <= 10_000_000 {
+				size = 256
+			}
+		} else {
+			size = 256
+		}
+	}
+
 	if sizeStr != "" {
-		size, err := strconv.Atoi(sizeStr)
-		if err == nil && size > 0 && size <= 256 && size != 256 {
+		size, err = strconv.Atoi(sizeStr)
+		if err == nil && size > 0 {
 			sizeEtag := fmt.Sprintf("%s-size-%d", etag, size)
 			if clientEtag == fmt.Sprintf(`"%s"`, sizeEtag) {
 				c.Status(http.StatusNotModified)
 				return
+			}
+
+			if size > 256 {
+				size = 256
 			}
 
 			resized, err := resizeImage(imageData, size)
@@ -78,7 +105,12 @@ func avatarHandler(c *gin.Context) {
 				return
 			}
 
-			rounded, newContentType, err := roundCorners(imageData, radiusInt)
+			fmt.Println(radiusInt, size, width)
+			scale := float64(size) / 256
+
+			ratio := int(math.Round(scale * float64(radiusInt)))
+
+			rounded, newContentType, err := roundCorners(imageData, ratio)
 			if err == nil {
 				imageData = rounded
 				contentType = newContentType
@@ -117,8 +149,9 @@ func uploadPfpHandler(c *gin.Context) {
 	}
 
 	var users []User
+	fmt.Println(len(usersFile))
 	if err := json.Unmarshal(usersFile, &users); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error parsing users file"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error parsing users file: " + err.Error()})
 		return
 	}
 
@@ -129,10 +162,22 @@ func uploadPfpHandler(c *gin.Context) {
 			break
 		}
 	}
-
 	if user == nil {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Invalid token"})
 		return
+	}
+
+	profileImageMax := 256
+
+	rawSize := toString(user.MaxSize)
+	if rawSize == "" {
+		rawSize = "5000000"
+	}
+
+	maxSize, err := strconv.ParseInt(rawSize, 10, 64)
+	// supporter tier on patreon (10 MB)
+	if err == nil && maxSize > 10_000_000 {
+		profileImageMax = 512
 	}
 
 	if req.Image == "" {
@@ -163,7 +208,7 @@ func uploadPfpHandler(c *gin.Context) {
 		return
 	}
 
-	resized := resize.Resize(256, 256, img, resize.Lanczos3)
+	resized := resize.Resize(uint(profileImageMax), uint(profileImageMax), img, resize.Lanczos3)
 
 	username := strings.ToLower(user.Username)
 	avatarDir := filepath.Join(documentPath, "rotur", "avatars")

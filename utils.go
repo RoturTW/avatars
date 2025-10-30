@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -11,6 +12,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -185,4 +188,53 @@ func enableCORS() gin.HandlerFunc {
 	config.AllowMethods = []string{"GET", "POST", "OPTIONS"}
 	config.AllowHeaders = []string{"Content-Type"}
 	return cors.New(config)
+}
+
+func toString(v any) string {
+	switch v := v.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case []any:
+		var s string
+		for _, item := range v {
+			s += toString(item)
+		}
+		return s
+	case map[string]any:
+		var s string
+		for k, v := range v {
+			s += fmt.Sprintf("%s: %s\n", k, toString(v))
+		}
+		return s
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func getUserBy(username string) (*User, error) {
+	usersFile, err := os.ReadFile("users.json")
+	if err != nil {
+		return nil, err
+	}
+
+	var users []User
+	fmt.Println(len(usersFile))
+	if err := json.Unmarshal(usersFile, &users); err != nil {
+		return nil, err
+	}
+
+	var user *User
+	for _, u := range users {
+		if strings.EqualFold(u.Username, username) {
+			user = &u
+			break
+		}
+	}
+	if user == nil {
+		return nil, fmt.Errorf("user not found")
+	}
+
+	return user, nil
 }

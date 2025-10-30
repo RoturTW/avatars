@@ -37,6 +37,7 @@ type CachedImage struct {
 type User struct {
 	Username string `json:"username"`
 	Key      string `json:"key"`
+	MaxSize  any    `json:"max_size"`
 }
 
 type UploadRequest struct {
