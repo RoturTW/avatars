@@ -105,7 +105,6 @@ func avatarHandler(c *gin.Context) {
 				return
 			}
 
-			fmt.Println(radiusInt, size, width)
 			scale := float64(size) / 256
 
 			ratio := int(math.Round(scale * float64(radiusInt)))
@@ -149,7 +148,6 @@ func uploadPfpHandler(c *gin.Context) {
 	}
 
 	var users []User
-	fmt.Println(len(usersFile))
 	if err := json.Unmarshal(usersFile, &users); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error parsing users file: " + err.Error()})
 		return
