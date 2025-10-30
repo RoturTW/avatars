@@ -105,7 +105,7 @@ func avatarHandler(c *gin.Context) {
 				return
 			}
 
-			scale := float64(size) / 256
+			scale := (float64(size) / (256 / float64(width))) / 256
 
 			ratio := int(math.Round(scale * float64(radiusInt)))
 

@@ -220,7 +220,6 @@ func getUserBy(username string) (*User, error) {
 	}
 
 	var users []User
-	fmt.Println(len(usersFile))
 	if err := json.Unmarshal(usersFile, &users); err != nil {
 		return nil, err
 	}
