@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/gif"
 	"image/jpeg"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,101 +19,126 @@ import (
 	"github.com/nfnt/resize"
 )
 
-func getAvatarImage(username string) ([]byte, string, time.Time, error) {
-	filePath := filepath.Join(documentPath, "rotur", "avatars", strings.ToLower(username)+".jpg")
+func getAvatarImage(username string) ([]byte, string, string, time.Time, error) {
+	avatarDir := filepath.Join(documentPath, "rotur", "avatars")
+	base := strings.ToLower(username)
 
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return nil, "", time.Time{}, err
+	extensions := []string{".gif", ".png", ".jpg"}
+	for _, ext := range extensions {
+		filePath := filepath.Join(avatarDir, base+ext)
+		info, err := os.Stat(filePath)
+		if err == nil {
+			data, err := os.ReadFile(filePath)
+			if err != nil {
+				return nil, "", "", time.Time{}, err
+			}
+			contentType := "image/jpeg"
+			switch ext {
+			case ".png":
+				contentType = "image/png"
+			case ".gif":
+				contentType = "image/gif"
+			}
+			etag := fmt.Sprintf("%s-%d", username, info.ModTime().Unix())
+			return data, contentType, etag, info.ModTime(), nil
+		}
 	}
 
-	etag := fmt.Sprintf("%s-%d", username, info.ModTime().Unix())
-
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, "", time.Time{}, err
-	}
-
-	return data, etag, info.ModTime(), nil
+	return nil, "", "", time.Time{}, os.ErrNotExist
 }
 
 func avatarHandler(c *gin.Context) {
-	username := strings.ToLower(c.Param("username"))
+	username, _ := strings.CutSuffix(strings.ToLower(c.Param("username")), ".gif")
 	radius := c.Query("radius")
 	sizeStr := c.Query("s")
 
 	clientEtag := c.GetHeader("If-None-Match")
 
-	imageData, etag, _, err := getAvatarImage(username)
+	imageData, contentType, etag, _, err := getAvatarImage(username)
 	if err != nil {
 		imageData = defaultImageContent
+		contentType = "image/jpeg"
 		etag = defaultImageEtag
 	}
 
-	contentType := "image/jpeg"
 	finalEtag := etag
 
+	// --- Handle GIFs ---
+	if contentType == "image/gif" {
+		// Handle size
+		if sizeStr != "" {
+			sz, err := strconv.Atoi(sizeStr)
+			if err == nil && sz > 0 && sz <= 256 {
+				resizedData, err := resizeGIF(imageData, sz, sz)
+				if err == nil {
+					imageData = resizedData
+					finalEtag += fmt.Sprintf("-size-%d", sz)
+				}
+			}
+		}
+
+		if radius != "" {
+			radiusInt, err := strconv.Atoi(strings.TrimSuffix(radius, "px"))
+			if err == nil && radiusInt > 0 {
+				src, err := gif.DecodeAll(bytes.NewReader(imageData))
+				if err == nil {
+					rounded, err := roundGIF(src, radiusInt)
+					if err != nil {
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "Error rounding GIF"})
+						fmt.Println("Error rounding gif: " + err.Error())
+						return
+					}
+					buf := bytes.NewBuffer(nil)
+					err = gif.EncodeAll(buf, rounded)
+					if err != nil {
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encoding GIF"})
+						fmt.Println("Error encoding gif: " + err.Error())
+						return
+					}
+					imageData = buf.Bytes()
+					finalEtag += "-rounded"
+				}
+			}
+		}
+
+		if clientEtag == fmt.Sprintf(`"%s"`, finalEtag) {
+			c.Status(http.StatusNotModified)
+			return
+		}
+
+		c.Header("Content-Type", "image/gif")
+		c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
+		c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
+		c.Data(http.StatusOK, "image/gif", imageData)
+		return
+	}
+
+	// --- Static formats (jpg/png) ---
 	img, _, err := image.Decode(bytes.NewReader(imageData))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decoding image"})
 		return
 	}
 
-	width := img.Bounds().Dx()
-
-	size := width
-
-	if width > 256 {
-		user, err := getUserBy(username)
-		if err == nil {
-			maxSize, err := strconv.ParseInt(toString(user.MaxSize), 10, 64)
-			if err == nil || maxSize <= 10_000_000 {
-				size = 256
-			}
-		} else {
-			size = 256
-		}
-	}
-
 	if sizeStr != "" {
-		size, err = strconv.Atoi(sizeStr)
-		if err == nil && size > 0 {
-			sizeEtag := fmt.Sprintf("%s-size-%d", etag, size)
-			if clientEtag == fmt.Sprintf(`"%s"`, sizeEtag) {
-				c.Status(http.StatusNotModified)
-				return
-			}
-
-			if size > 256 {
-				size = 256
-			}
-
-			resized, err := resizeImage(imageData, size)
-			if err == nil {
-				imageData = resized
-				finalEtag = sizeEtag
-			}
+		sz, err := strconv.Atoi(sizeStr)
+		if err == nil && sz > 0 && sz <= 256 {
+			resized := resize.Resize(uint(sz), 0, img, resize.Lanczos3)
+			var buf bytes.Buffer
+			jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85})
+			imageData = buf.Bytes()
+			finalEtag = fmt.Sprintf("%s-size-%d", etag, sz)
 		}
 	}
 
 	if radius != "" {
 		radiusInt, err := strconv.Atoi(strings.TrimSuffix(radius, "px"))
 		if err == nil && radiusInt > 0 {
-			radiusEtag := fmt.Sprintf("%s-rounded-%s", finalEtag, radius)
-			if clientEtag == fmt.Sprintf(`"%s"`, radiusEtag) {
-				c.Status(http.StatusNotModified)
-				return
-			}
-
-			scale := (float64(size) / (256 / float64(width))) / 256
-
-			ratio := int(math.Round(scale * float64(radiusInt)))
-
-			rounded, newContentType, err := roundCorners(imageData, ratio)
+			rounded, newContentType, err := roundCorners(imageData, radiusInt)
 			if err == nil {
 				imageData = rounded
 				contentType = newContentType
-				finalEtag = radiusEtag
+				finalEtag += "-rounded"
 			}
 		}
 	}
@@ -124,10 +149,6 @@ func avatarHandler(c *gin.Context) {
 	}
 
 	maxAge := 86400
-	if strings.Contains(finalEtag, "rounded") {
-		maxAge = 604800
-	}
-
 	c.Header("Content-Type", contentType)
 	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", maxAge))
 	c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
@@ -165,19 +186,6 @@ func uploadPfpHandler(c *gin.Context) {
 		return
 	}
 
-	profileImageMax := 256
-
-	rawSize := toString(user.MaxSize)
-	if rawSize == "" {
-		rawSize = "5000000"
-	}
-
-	maxSize, err := strconv.ParseInt(rawSize, 10, 64)
-	// supporter tier on patreon (10 MB)
-	if err == nil && maxSize > 10_000_000 {
-		profileImageMax = 512
-	}
-
 	if req.Image == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Missing image"})
 		return
@@ -189,41 +197,69 @@ func uploadPfpHandler(c *gin.Context) {
 		return
 	}
 
+	mimeHeader := parts[0]
 	imageData, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image format"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image data"})
 		return
 	}
 
-	if len(imageData) > 5*1024*1024 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Image size exceeds 5MB limit"})
-		return
-	}
-
-	img, _, err := image.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Error decoding image"})
-		return
-	}
-
-	resized := resize.Resize(uint(profileImageMax), uint(profileImageMax), img, resize.Lanczos3)
-
-	username := strings.ToLower(user.Username)
 	avatarDir := filepath.Join(documentPath, "rotur", "avatars")
 	os.MkdirAll(avatarDir, 0755)
+	username := strings.ToLower(user.Username)
 
-	filePath := filepath.Join(avatarDir, username+".jpg")
-	file, err := os.Create(filePath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving image"})
-		return
+	tier := strings.ToLower(toString(user.GetSubscription()))
+	isPro := strings.EqualFold(tier, "pro") || strings.EqualFold(tier, "max")
+
+	var ext, contentType string
+	switch {
+	case strings.Contains(mimeHeader, "image/gif"):
+		if isPro {
+			ext = ".gif"
+			contentType = "image/gif"
+		} else {
+			// downgrade to jpg if not pro
+			ext = ".jpg"
+			contentType = "image/jpeg"
+		}
+	case strings.Contains(mimeHeader, "image/png"):
+		ext = ".png"
+		contentType = "image/png"
+	default:
+		ext = ".jpg"
+		contentType = "image/jpeg"
 	}
-	defer file.Close()
 
-	err = jpeg.Encode(file, resized, &jpeg.Options{Quality: 85})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encoding image"})
-		return
+	filePath := filepath.Join(avatarDir, username+ext)
+
+	if contentType == "image/gif" {
+		// Pro users only
+		resizedData, err := resizeGIF(imageData, 256, 256)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error resizing GIF"})
+			return
+		}
+
+		err = os.WriteFile(filePath, resizedData, 0644)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving GIF"})
+			return
+		}
+	} else {
+		img, _, err := image.Decode(bytes.NewReader(imageData))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Error decoding image"})
+			return
+		}
+
+		resized := resize.Resize(256, 256, img, resize.Lanczos3)
+		out, err := os.Create(filePath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error saving image"})
+			return
+		}
+		defer out.Close()
+		jpeg.Encode(out, resized, &jpeg.Options{Quality: 85})
 	}
 
 	cacheMutex.Lock()

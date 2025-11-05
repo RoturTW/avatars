@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,9 +36,26 @@ type CachedImage struct {
 }
 
 type User struct {
-	Username string `json:"username"`
-	Key      string `json:"key"`
-	MaxSize  any    `json:"max_size"`
+	Username     string `json:"username"`
+	Key          string `json:"key"`
+	MaxSize      any    `json:"max_size"`
+	Subscription any    `json:"sys.subscription"`
+}
+
+func (u User) GetSubscription() string {
+	if strings.EqualFold(u.Username, "mist") {
+		// keep me as the sigma
+		return "Max"
+	}
+	usub := u.Subscription
+	val := "Free"
+
+	sub, ok := usub.(map[string]any)
+	if !ok {
+		return val
+	}
+	val = getStringOrDefault(sub["tier"], "Free")
+	return val
 }
 
 type UploadRequest struct {
@@ -50,7 +68,18 @@ func init() {
 	loadDefaultBanner()
 }
 
+func requiresAdmin(c *gin.Context) {
+	token := c.Query("ADMIN_TOKEN")
+	if token == ADMIN_TOKEN {
+		c.Next()
+		return
+	}
+	c.JSON(401, gin.H{"error": "Unauthorized"})
+	c.Abort()
+}
+
 func main() {
+	envOnce.Do(loadEnvFile)
 	gin.SetMode(gin.ReleaseMode)
 
 	r := gin.Default()
@@ -59,8 +88,8 @@ func main() {
 
 	r.GET("/:username", avatarHandler)
 	r.GET("/.banners/:username", bannerHandler)
-	r.POST("/rotur-upload-pfp", uploadPfpHandler)
-	r.POST("/rotur-upload-banner", uploadBannerHandler)
+	r.POST("/rotur-upload-pfp", requiresAdmin, uploadPfpHandler)
+	r.POST("/rotur-upload-banner", requiresAdmin, uploadBannerHandler)
 
 	log.Printf("Avatar service starting on port %s", port)
 	r.Run(":" + port)
