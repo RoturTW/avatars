@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ func getAvatarImage(username string) ([]byte, string, string, time.Time, error) 
 	avatarDir := filepath.Join(documentPath, "rotur", "avatars")
 	base := strings.ToLower(username)
 
-	extensions := []string{".gif", ".png", ".jpg"}
+	extensions := []string{".gif", ".jpg"}
 	for _, ext := range extensions {
 		filePath := filepath.Join(avatarDir, base+ext)
 		info, err := os.Stat(filePath)
@@ -65,6 +66,11 @@ func avatarHandler(c *gin.Context) {
 
 	// --- Handle GIFs ---
 	if contentType == "image/gif" {
+
+		if sizeStr == "" && radius == "" {
+			c.File(filepath.Join(documentPath, "rotur", "avatars", username+".gif"))
+			return
+		}
 		// Handle size
 		if sizeStr != "" {
 			sz, err := strconv.Atoi(sizeStr)
@@ -110,6 +116,10 @@ func avatarHandler(c *gin.Context) {
 		c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
 		c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
 		c.Data(http.StatusOK, "image/gif", imageData)
+		return
+	}
+	if sizeStr == "" && radius == "" {
+		c.File(filepath.Join(documentPath, "rotur", "avatars", username+".jpg"))
 		return
 	}
 
@@ -209,7 +219,7 @@ func uploadPfpHandler(c *gin.Context) {
 	username := strings.ToLower(user.Username)
 
 	tier := strings.ToLower(toString(user.GetSubscription()))
-	isPro := strings.EqualFold(tier, "pro") || strings.EqualFold(tier, "max")
+	isPro := slices.Contains([]string{"drive", "pro", "max"}, tier)
 
 	var ext, contentType string
 	switch {
