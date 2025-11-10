@@ -118,7 +118,7 @@ func avatarHandler(c *gin.Context) {
 		c.Data(http.StatusOK, "image/gif", imageData)
 		return
 	}
-	if sizeStr == "" && radius == "" {
+	if sizeStr == "" && radius == "" && etag != defaultImageEtag {
 		c.File(filepath.Join(documentPath, "rotur", "avatars", username+".jpg"))
 		return
 	}
