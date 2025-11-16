@@ -232,9 +232,6 @@ func uploadPfpHandler(c *gin.Context) {
 			ext = ".jpg"
 			contentType = "image/jpeg"
 		}
-	case strings.Contains(mimeHeader, "image/png"):
-		ext = ".png"
-		contentType = "image/png"
 	default:
 		ext = ".jpg"
 		contentType = "image/jpeg"
