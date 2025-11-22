@@ -20,6 +20,22 @@ import (
 	"github.com/nfnt/resize"
 )
 
+func deleteAvatars(username string) error {
+	avatarDir := filepath.Join(documentPath, "rotur", "avatars")
+	base := strings.ToLower(username)
+
+	extensions := []string{".gif", ".jpg"}
+	for _, ext := range extensions {
+		filePath := filepath.Join(avatarDir, base+ext)
+		err := os.Remove(filePath)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func getAvatarImage(username string) ([]byte, string, string, time.Time, error) {
 	avatarDir := filepath.Join(documentPath, "rotur", "avatars")
 	base := strings.ToLower(username)
@@ -238,6 +254,7 @@ func uploadPfpHandler(c *gin.Context) {
 	}
 
 	filePath := filepath.Join(avatarDir, username+ext)
+	deleteAvatars(username)
 
 	if contentType == "image/gif" {
 		// Pro users only

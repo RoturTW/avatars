@@ -24,7 +24,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/logica0419/resigif"
-	"github.com/nfnt/resize"
 )
 
 func roundCorners(imageData []byte, radius int) ([]byte, string, error) {
@@ -311,44 +310,6 @@ func resizeGIF(data []byte, width, height int) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
-}
-
-func resizeImage(imageData []byte, size int) ([]byte, error) {
-	cacheKey := fmt.Sprintf("%x-%d", md5.Sum(imageData), size)
-
-	cacheMutex.RLock()
-	if cached, exists := resizedCache[cacheKey]; exists {
-		if time.Since(cached.Timestamp) < time.Duration(cacheTimeout)*time.Second {
-			cacheMutex.RUnlock()
-			return cached.Data, nil
-		}
-	}
-	cacheMutex.RUnlock()
-
-	img, _, err := image.Decode(bytes.NewReader(imageData))
-	if err != nil {
-		return imageData, err
-	}
-
-	resized := resize.Resize(uint(size), uint(size), img, resize.Lanczos3)
-
-	var buf bytes.Buffer
-	err = jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85})
-	if err != nil {
-		return imageData, err
-	}
-
-	result := buf.Bytes()
-
-	cacheMutex.Lock()
-	resizedCache[cacheKey] = CachedImage{
-		Data:        result,
-		ContentType: "image/jpeg",
-		Timestamp:   time.Now(),
-	}
-	cacheMutex.Unlock()
-
-	return result, nil
 }
 
 func loadDefaultImage() {

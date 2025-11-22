@@ -20,6 +20,21 @@ import (
 	"github.com/nfnt/resize"
 )
 
+func deleteBanners(username string) error {
+	bannerDir := filepath.Join(documentPath, "rotur", "banners")
+	base := strings.ToLower(username)
+
+	extensions := []string{".gif", ".jpg"}
+	for _, ext := range extensions {
+		filePath := filepath.Join(bannerDir, base+ext)
+		err := os.Remove(filePath)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func loadDefaultBanner() {
 	img := image.NewRGBA(image.Rect(0, 0, 3, 1))
 
@@ -215,6 +230,8 @@ func uploadBannerHandler(c *gin.Context) {
 	username := strings.ToLower(user.Username)
 	bannerDir := filepath.Join(documentPath, "rotur", "banners")
 	filePath := filepath.Join(bannerDir, username+ext)
+
+	deleteBanners(username)
 
 	if contentType == "image/gif" {
 		// Pro users only
