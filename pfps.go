@@ -88,7 +88,7 @@ func avatarHandler(c *gin.Context) {
 			}
 
 			c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtagBase))
-			c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
+			c.Header("Cache-Control", "public, max-age=0, must-revalidate")
 			c.File(filePath)
 			return
 		}
@@ -110,7 +110,7 @@ func avatarHandler(c *gin.Context) {
 		}
 
 		c.Header("ETag", fmt.Sprintf(`"%s"`, cacheKey))
-		c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
+		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
 		c.Data(http.StatusOK, cached.ContentType, cached.Data)
 		return
 	}
@@ -172,7 +172,7 @@ func avatarHandler(c *gin.Context) {
 		}
 
 		c.Header("Content-Type", "image/gif")
-		c.Header("Cache-Control", "public, max-age=86400, must-revalidate")
+		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
 		c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
 		c.Data(http.StatusOK, "image/gif", imageData)
 		return
