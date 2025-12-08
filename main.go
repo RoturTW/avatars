@@ -87,7 +87,11 @@ func main() {
 	r.Use(enableCORS())
 
 	r.GET("/:username", avatarHandler)
+	r.HEAD("/:username", avatarHandler)
+
 	r.GET("/.banners/:username", bannerHandler)
+	r.HEAD("/.banners/:username", bannerHandler)
+
 	r.POST("/rotur-upload-pfp", requiresAdmin, uploadPfpHandler)
 	r.POST("/rotur-upload-banner", requiresAdmin, uploadBannerHandler)
 

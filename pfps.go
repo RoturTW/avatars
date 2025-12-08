@@ -88,7 +88,12 @@ func avatarHandler(c *gin.Context) {
 			}
 
 			c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtagBase))
+			c.Header("Content-Type", contentType)
 			c.Header("Cache-Control", "public, max-age=0, must-revalidate")
+			if c.Request.Method == http.MethodHead {
+				c.Status(200)
+				return
+			}
 			c.File(filePath)
 			return
 		}
@@ -97,6 +102,14 @@ func avatarHandler(c *gin.Context) {
 	cacheKey := finalEtagBase
 	if modifier != "" {
 		cacheKey = cacheKey + "-" + modifier
+	}
+
+	if c.Request.Method == http.MethodHead {
+		c.Header("Content-Type", contentType)
+		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
+		c.Header("ETag", fmt.Sprintf(`"%s"`, cacheKey))
+		c.Status(200)
+		return
 	}
 
 	cacheMutex.RLock()
@@ -220,6 +233,10 @@ func avatarHandler(c *gin.Context) {
 	c.Header("Content-Type", contentType)
 	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", maxAge))
 	c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
+	if c.Request.Method == http.MethodHead {
+		c.Status(200)
+		return
+	}
 	c.Data(http.StatusOK, contentType, imageData)
 }
 

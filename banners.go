@@ -89,11 +89,21 @@ func bannerHandler(c *gin.Context) {
 		} else {
 			c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		}
+		if c.Request.Method == http.MethodHead {
+			c.Status(200)
+			return
+		}
 		if bannerPath != "" {
 			c.File(bannerPath)
 		} else {
 			c.Data(http.StatusOK, contentType, imageData)
 		}
+		return
+	}
+
+	if c.Request.Method == http.MethodHead {
+		c.Header("Content-Type", contentType)
+		c.Status(200)
 		return
 	}
 
