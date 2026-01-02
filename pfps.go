@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/gif"
 	"image/jpeg"
 	"net/http"
@@ -22,6 +23,56 @@ import (
 var (
 	transformCache = make(map[string]CachedImage)
 )
+
+func getUserSubscriptionTier(username string) string {
+	username = strings.ToLower(username)
+	usersFile, err := os.ReadFile("users.json")
+	if err != nil {
+		return "Free"
+	}
+	var users []User
+	if err := json.Unmarshal(usersFile, &users); err != nil {
+		return "Free"
+	}
+	for i := range users {
+		if strings.EqualFold(users[i].Username, username) {
+			return toString(users[i].GetSubscription())
+		}
+	}
+	return "Free"
+}
+
+func decodeFirstGIFFrame(data []byte) (image.Image, error) {
+	g, err := gif.DecodeAll(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if len(g.Image) == 0 {
+		return nil, fmt.Errorf("no frames in GIF")
+	}
+
+	b := image.Rect(0, 0, g.Config.Width, g.Config.Height)
+	dst := image.NewRGBA(b)
+
+	bg := &image.Uniform{C: image.Transparent}
+	if g.BackgroundIndex < byte(len(g.Image[0].Palette)) {
+		bg = &image.Uniform{C: g.Image[0].Palette[g.BackgroundIndex]}
+	}
+	draw.Draw(dst, b, bg, image.Point{}, draw.Src)
+
+	frame := g.Image[0]
+	draw.Draw(dst, frame.Bounds(), frame, frame.Bounds().Min, draw.Over)
+	return dst, nil
+}
+
+func encodeJPEG(img image.Image, quality int) []byte {
+	if quality <= 0 {
+		quality = 85
+	}
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
+	return buf.Bytes()
+}
 
 func deleteAvatars(username string) error {
 	avatarDir := filepath.Join(documentPath, "rotur", "avatars")
@@ -61,9 +112,14 @@ func avatarHandler(c *gin.Context) {
 	radius := c.Query("radius")
 	sizeStr := c.Query("s")
 
+	tier := strings.ToLower(toString(getUserSubscriptionTier(username)))
+	isPro := slices.Contains([]string{"drive", "pro", "max"}, tier)
+
 	clientEtag := c.GetHeader("If-None-Match")
 
 	filePath, contentType, baseEtag, metaErr := getAvatarMetadata(username)
+
+	forceFirstFrameJpeg := !isPro && metaErr == nil && contentType == "image/gif"
 
 	finalEtagBase := baseEtag
 	if metaErr != nil {
@@ -82,26 +138,32 @@ func avatarHandler(c *gin.Context) {
 
 	if modifier == "" {
 		if metaErr == nil {
-			if clientEtag == fmt.Sprintf(`"%s"`, finalEtagBase) {
-				c.Status(http.StatusNotModified)
-				return
-			}
+			if !forceFirstFrameJpeg {
+				if clientEtag == fmt.Sprintf(`"%s"`, finalEtagBase) {
+					c.Status(http.StatusNotModified)
+					return
+				}
 
-			c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtagBase))
-			c.Header("Content-Type", contentType)
-			c.Header("Cache-Control", "public, max-age=0, must-revalidate")
-			if c.Request.Method == http.MethodHead {
-				c.Status(200)
+				c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtagBase))
+				c.Header("Content-Type", contentType)
+				c.Header("Cache-Control", "public, max-age=0, must-revalidate")
+				if c.Request.Method == http.MethodHead {
+					c.Status(200)
+					return
+				}
+				c.File(filePath)
 				return
 			}
-			c.File(filePath)
-			return
 		}
 	}
 
 	cacheKey := finalEtagBase
 	if modifier != "" {
 		cacheKey = cacheKey + "-" + modifier
+	}
+	if forceFirstFrameJpeg {
+		cacheKey = cacheKey + "-firstframe-jpg"
+		contentType = "image/jpeg"
 	}
 
 	if c.Request.Method == http.MethodHead {
@@ -146,6 +208,14 @@ func avatarHandler(c *gin.Context) {
 	}
 
 	finalEtag := cacheKey
+
+	if forceFirstFrameJpeg {
+		img, err := decodeFirstGIFFrame(imageData)
+		if err == nil {
+			imageData = encodeJPEG(img, 85)
+			contentType = "image/jpeg"
+		}
+	}
 
 	if contentType == "image/gif" {
 		if sizeStr != "" {

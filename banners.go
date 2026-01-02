@@ -68,7 +68,17 @@ func bannerHandler(c *gin.Context) {
 	radiusInt, parseErr := strconv.Atoi(strings.TrimSuffix(radius, "px"))
 	needRounding := radius != "" && parseErr == nil && radiusInt > 0
 
+	tier := strings.ToLower(toString(getUserSubscriptionTier(username)))
+	isPro := strings.EqualFold(tier, "pro") || strings.EqualFold(tier, "max")
+
 	bannerPath, contentType, etag, modTime, err := getBannerPath(username)
+	forceFirstFrameJpeg := !isPro && err == nil && contentType == "image/gif"
+	if forceFirstFrameJpeg {
+		contentType = "image/jpeg"
+		if etag != "" {
+			etag = etag + "-firstframe-jpg"
+		}
+	}
 	var imageData []byte
 	if err != nil {
 		imageData = defaultBannerContent
@@ -93,6 +103,25 @@ func bannerHandler(c *gin.Context) {
 			c.Status(200)
 			return
 		}
+
+		if forceFirstFrameJpeg {
+			if bannerPath != "" {
+				imageData, err = os.ReadFile(bannerPath)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading banner file"})
+					return
+				}
+			}
+			img, err := decodeFirstGIFFrame(imageData)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error decoding GIF"})
+				return
+			}
+			jpegData := encodeJPEG(img, 85)
+			c.Data(http.StatusOK, "image/jpeg", jpegData)
+			return
+		}
+
 		if bannerPath != "" {
 			c.File(bannerPath)
 		} else {
@@ -114,6 +143,16 @@ func bannerHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading banner file"})
 			return
 		}
+	}
+
+	if forceFirstFrameJpeg {
+		img, err := decodeFirstGIFFrame(imageData)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error decoding GIF"})
+			return
+		}
+		imageData = encodeJPEG(img, 85)
+		contentType = "image/jpeg"
 	}
 
 	if contentType == "image/gif" {
