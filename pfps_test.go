@@ -41,8 +41,8 @@ func TestDecodeFirstGIFFrame_ReturnsImage(t *testing.T) {
 		t.Fatalf("expected image, got nil")
 	}
 
-	jpg := encodeJPEG(out, 80)
-	if len(jpg) == 0 {
+	jpg, err := encodeJPEG(out, 80)
+	if err != nil {
 		t.Fatalf("expected jpeg bytes")
 	}
 	if _, err := jpeg.Decode(bytes.NewReader(jpg)); err != nil {

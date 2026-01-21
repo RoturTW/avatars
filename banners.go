@@ -117,7 +117,11 @@ func bannerHandler(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error decoding GIF"})
 				return
 			}
-			jpegData := encodeJPEG(img, 85)
+			jpegData, err := encodeJPEG(img, 85)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encoding JPEG"})
+				return
+			}
 			c.Data(http.StatusOK, "image/jpeg", jpegData)
 			return
 		}
@@ -151,7 +155,11 @@ func bannerHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error decoding GIF"})
 			return
 		}
-		imageData = encodeJPEG(img, 85)
+		imageData, err = encodeJPEG(img, 85)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error encoding JPEG"})
+			return
+		}
 		contentType = "image/jpeg"
 	}
 

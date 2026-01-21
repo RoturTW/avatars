@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/logica0419/resigif"
+	"github.com/nfnt/resize"
 )
 
 func roundCorners(imageData []byte, radius int) ([]byte, string, error) {
@@ -239,6 +240,25 @@ func roundGIF(src *gif.GIF, radius int) (*gif.GIF, error) {
 	}
 
 	return dst, nil
+}
+
+func resizeGIFDecoded(g *gif.GIF, size int) *gif.GIF {
+	if size <= 0 {
+		return g
+	}
+
+	for i, frame := range g.Image {
+		g.Image[i] = resize.Resize(
+			uint(size),
+			uint(size),
+			frame,
+			resize.Lanczos3,
+		).(*image.Paletted)
+	}
+
+	g.Config.Width = size
+	g.Config.Height = size
+	return g
 }
 
 func toRGBA(src image.Image) *image.RGBA {

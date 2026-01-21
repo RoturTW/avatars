@@ -15,14 +15,89 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nfnt/resize"
 )
 
+type LRUCache struct {
+	mu       sync.RWMutex
+	items    map[string]*cacheEntry
+	maxSize  int
+	maxBytes int64
+	curBytes int64
+}
+
+type cacheEntry struct {
+	data       CachedImage
+	size       int64
+	prev, next *cacheEntry
+	key        string
+}
+
 var (
-	transformCache = make(map[string]CachedImage)
+	transformCache = NewLRUCache(500, 100*1024*1024)
 )
+
+func NewLRUCache(maxSize int, maxBytes int64) *LRUCache {
+	return &LRUCache{
+		items:    make(map[string]*cacheEntry),
+		maxSize:  maxSize,
+		maxBytes: maxBytes,
+	}
+}
+
+func (c *LRUCache) Get(key string) (CachedImage, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	entry, ok := c.items[key]
+	if !ok {
+		return CachedImage{}, false
+	}
+	return entry.data, true
+}
+
+func (c *LRUCache) Set(key string, img CachedImage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	size := int64(len(img.Data))
+
+	for (len(c.items) >= c.maxSize || c.curBytes+size > c.maxBytes) && len(c.items) > 0 {
+		c.evictOldest()
+	}
+
+	entry := &cacheEntry{
+		data: img,
+		size: size,
+		key:  key,
+	}
+	c.items[key] = entry
+	c.curBytes += size
+}
+
+func (c *LRUCache) evictOldest() {
+	for k, v := range c.items {
+		delete(c.items, k)
+		c.curBytes -= v.size
+		break
+	}
+}
+
+func (c *LRUCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = make(map[string]*cacheEntry)
+	c.curBytes = 0
+}
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
 func getUserSubscriptionTier(username string) string {
 	username = strings.ToLower(username)
@@ -65,13 +140,22 @@ func decodeFirstGIFFrame(data []byte) (image.Image, error) {
 	return dst, nil
 }
 
-func encodeJPEG(img image.Image, quality int) []byte {
+func encodeJPEG(img image.Image, quality int) ([]byte, error) {
 	if quality <= 0 {
 		quality = 85
 	}
-	var buf bytes.Buffer
-	_ = jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality})
-	return buf.Bytes()
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
+	err := jpeg.Encode(buf, img, &jpeg.Options{Quality: quality})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 func deleteAvatars(username string) error {
@@ -127,43 +211,40 @@ func avatarHandler(c *gin.Context) {
 		finalEtagBase = defaultImageEtag
 	}
 
-	modifierParts := []string{}
+	var cacheKeyBuilder strings.Builder
+	cacheKeyBuilder.WriteString(finalEtagBase)
+
 	if sizeStr != "" {
-		modifierParts = append(modifierParts, "size="+sizeStr)
+		cacheKeyBuilder.WriteString("-size=")
+		cacheKeyBuilder.WriteString(sizeStr)
 	}
 	if radius != "" {
-		modifierParts = append(modifierParts, "radius="+radius)
-	}
-	modifier := strings.Join(modifierParts, "-")
-
-	if modifier == "" {
-		if metaErr == nil {
-			if !forceFirstFrameJpeg {
-				if clientEtag == fmt.Sprintf(`"%s"`, finalEtagBase) {
-					c.Status(http.StatusNotModified)
-					return
-				}
-
-				c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtagBase))
-				c.Header("Content-Type", contentType)
-				c.Header("Cache-Control", "public, max-age=0, must-revalidate")
-				if c.Request.Method == http.MethodHead {
-					c.Status(200)
-					return
-				}
-				c.File(filePath)
-				return
-			}
-		}
-	}
-
-	cacheKey := finalEtagBase
-	if modifier != "" {
-		cacheKey = cacheKey + "-" + modifier
+		cacheKeyBuilder.WriteString("-radius=")
+		cacheKeyBuilder.WriteString(radius)
 	}
 	if forceFirstFrameJpeg {
-		cacheKey = cacheKey + "-firstframe-jpg"
+		cacheKeyBuilder.WriteString("-firstframe-jpg")
 		contentType = "image/jpeg"
+	}
+
+	cacheKey := cacheKeyBuilder.String()
+	modifier := sizeStr != "" || radius != ""
+
+	if !modifier && metaErr == nil && !forceFirstFrameJpeg {
+		if clientEtag == fmt.Sprintf(`"%s"`, finalEtagBase) {
+			c.Status(http.StatusNotModified)
+			return
+		}
+
+		c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtagBase))
+		c.Header("Content-Type", contentType)
+		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
+		if c.Request.Method == http.MethodHead {
+			c.Status(200)
+			return
+		}
+		c.File(filePath)
+		return
 	}
 
 	if c.Request.Method == http.MethodHead {
@@ -174,10 +255,7 @@ func avatarHandler(c *gin.Context) {
 		return
 	}
 
-	cacheMutex.RLock()
-	cached, ok := transformCache[cacheKey]
-	cacheMutex.RUnlock()
-
+	cached, ok := transformCache.Get(cacheKey)
 	if ok {
 		if clientEtag == fmt.Sprintf(`"%s"`, cacheKey) {
 			c.Status(http.StatusNotModified)
@@ -194,9 +272,6 @@ func avatarHandler(c *gin.Context) {
 	if metaErr != nil {
 		imageData = defaultImageContent
 		contentType = "image/jpeg"
-		if finalEtagBase == "" {
-			finalEtagBase = defaultImageEtag
-		}
 	} else {
 		var err error
 		imageData, err = os.ReadFile(filePath)
@@ -207,13 +282,14 @@ func avatarHandler(c *gin.Context) {
 		}
 	}
 
-	finalEtag := cacheKey
-
 	if forceFirstFrameJpeg {
 		img, err := decodeFirstGIFFrame(imageData)
 		if err == nil {
-			imageData = encodeJPEG(img, 85)
-			contentType = "image/jpeg"
+			encoded, err := encodeJPEG(img, 85)
+			if err == nil {
+				imageData = encoded
+				contentType = "image/jpeg"
+			}
 		}
 	}
 
@@ -235,28 +311,31 @@ func avatarHandler(c *gin.Context) {
 				if err == nil {
 					rounded, err := roundGIF(src, radiusInt)
 					if err == nil {
-						buf := bytes.NewBuffer(nil)
+						buf := bufferPool.Get().(*bytes.Buffer)
+						buf.Reset()
+						defer bufferPool.Put(buf)
+
 						err = gif.EncodeAll(buf, rounded)
 						if err == nil {
-							imageData = buf.Bytes()
+							result := make([]byte, buf.Len())
+							copy(result, buf.Bytes())
+							imageData = result
 						}
 					}
 				}
 			}
 		}
 
-		cacheMutex.Lock()
-		transformCache[cacheKey] = CachedImage{ContentType: "image/gif", Data: imageData}
-		cacheMutex.Unlock()
+		transformCache.Set(cacheKey, CachedImage{ContentType: "image/gif", Data: imageData})
 
-		if clientEtag == fmt.Sprintf(`"%s"`, finalEtag) {
+		if clientEtag == fmt.Sprintf(`"%s"`, cacheKey) {
 			c.Status(http.StatusNotModified)
 			return
 		}
 
 		c.Header("Content-Type", "image/gif")
 		c.Header("Cache-Control", "public, max-age=0, must-revalidate")
-		c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
+		c.Header("ETag", fmt.Sprintf(`"%s"`, cacheKey))
 		c.Data(http.StatusOK, "image/gif", imageData)
 		return
 	}
@@ -271,10 +350,14 @@ func avatarHandler(c *gin.Context) {
 		sz, err := strconv.Atoi(sizeStr)
 		if err == nil && sz > 0 && sz <= 256 {
 			resized := resize.Resize(uint(sz), 0, img, resize.Lanczos3)
-			var buf bytes.Buffer
-			jpeg.Encode(&buf, resized, &jpeg.Options{Quality: 85})
-			imageData = buf.Bytes()
-			finalEtag = cacheKey
+			buf := bufferPool.Get().(*bytes.Buffer)
+			buf.Reset()
+			defer bufferPool.Put(buf)
+
+			jpeg.Encode(buf, resized, &jpeg.Options{Quality: 85})
+			result := make([]byte, buf.Len())
+			copy(result, buf.Bytes())
+			imageData = result
 		}
 	}
 
@@ -285,16 +368,13 @@ func avatarHandler(c *gin.Context) {
 			if err == nil {
 				imageData = rounded
 				contentType = newContentType
-				finalEtag = cacheKey
 			}
 		}
 	}
 
-	cacheMutex.Lock()
-	transformCache[cacheKey] = CachedImage{ContentType: contentType, Data: imageData}
-	cacheMutex.Unlock()
+	transformCache.Set(cacheKey, CachedImage{ContentType: contentType, Data: imageData})
 
-	if clientEtag == fmt.Sprintf(`"%s"`, finalEtag) {
+	if clientEtag == fmt.Sprintf(`"%s"`, cacheKey) {
 		c.Status(http.StatusNotModified)
 		return
 	}
@@ -302,7 +382,7 @@ func avatarHandler(c *gin.Context) {
 	maxAge := 86400
 	c.Header("Content-Type", contentType)
 	c.Header("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", maxAge))
-	c.Header("ETag", fmt.Sprintf(`"%s"`, finalEtag))
+	c.Header("ETag", fmt.Sprintf(`"%s"`, cacheKey))
 	if c.Request.Method == http.MethodHead {
 		c.Status(200)
 		return
@@ -353,6 +433,13 @@ func uploadPfpHandler(c *gin.Context) {
 	}
 
 	mimeHeader := parts[0]
+
+	estimatedSize := (len(parts[1]) * 3) / 4
+	if estimatedSize > 10*1024*1024 { // 10MB limit for decoded image
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Image too large"})
+		return
+	}
+
 	imageData, err := base64.StdEncoding.DecodeString(parts[1])
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image data"})
@@ -373,7 +460,6 @@ func uploadPfpHandler(c *gin.Context) {
 			ext = ".gif"
 			contentType = "image/gif"
 		} else {
-			// downgrade to jpg if not pro
 			ext = ".jpg"
 			contentType = "image/jpeg"
 		}
@@ -386,7 +472,6 @@ func uploadPfpHandler(c *gin.Context) {
 	deleteAvatars(username)
 
 	if contentType == "image/gif" {
-		// Pro users only
 		resizedData, err := resizeGIF(imageData, 256, 256)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error resizing GIF"})
@@ -415,9 +500,7 @@ func uploadPfpHandler(c *gin.Context) {
 		jpeg.Encode(out, resized, &jpeg.Options{Quality: 85})
 	}
 
-	cacheMutex.Lock()
-	transformCache = make(map[string]CachedImage)
-	cacheMutex.Unlock()
+	transformCache.Clear()
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "Success",
