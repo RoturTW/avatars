@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -322,6 +323,8 @@ func uploadBannerHandler(c *gin.Context) {
 			return
 		}
 	}
+
+	subscriptionCache = sync.Map{}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "Success",

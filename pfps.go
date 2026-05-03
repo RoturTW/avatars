@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nfnt/resize"
@@ -36,8 +37,15 @@ type cacheEntry struct {
 	key        string
 }
 
+type subscriptionCacheEntry struct {
+	tier      string
+	timestamp time.Time
+}
+
 var (
-	transformCache = NewLRUCache(500, 100*1024*1024)
+	transformCache    = NewLRUCache(500, 100*1024*1024)
+	subscriptionCache sync.Map
+	cacheExpiry       = 24 * time.Hour
 )
 
 func NewLRUCache(maxSize int, maxBytes int64) *LRUCache {
@@ -101,19 +109,34 @@ var bufferPool = sync.Pool{
 
 func getUserSubscriptionTier(username string) string {
 	username = strings.ToLower(username)
+
+	if cached, ok := subscriptionCache.Load(username); ok {
+		if entry, ok := cached.(subscriptionCacheEntry); ok {
+			if time.Since(entry.timestamp) < cacheExpiry {
+				return entry.tier
+			}
+			subscriptionCache.Delete(username)
+		}
+	}
+
 	usersFile, err := os.ReadFile("users.json")
 	if err != nil {
+		subscriptionCache.Store(username, subscriptionCacheEntry{tier: "Free", timestamp: time.Now()})
 		return "Free"
 	}
 	var users []User
 	if err := json.Unmarshal(usersFile, &users); err != nil {
+		subscriptionCache.Store(username, subscriptionCacheEntry{tier: "Free", timestamp: time.Now()})
 		return "Free"
 	}
 	for i := range users {
 		if strings.EqualFold(users[i].Username, username) {
-			return toString(users[i].GetSubscription())
+			tier := toString(users[i].GetSubscription())
+			subscriptionCache.Store(username, subscriptionCacheEntry{tier: tier, timestamp: time.Now()})
+			return tier
 		}
 	}
+	subscriptionCache.Store(username, subscriptionCacheEntry{tier: "Free", timestamp: time.Now()})
 	return "Free"
 }
 
@@ -196,12 +219,12 @@ func avatarHandler(c *gin.Context) {
 	radius := c.Query("radius")
 	sizeStr := c.Query("s")
 
-	tier := strings.ToLower(toString(getUserSubscriptionTier(username)))
-	isPro := slices.Contains([]string{"drive", "pro", "max"}, tier)
-
 	clientEtag := c.GetHeader("If-None-Match")
 
 	filePath, contentType, baseEtag, metaErr := getAvatarMetadata(username)
+
+	tier := strings.ToLower(toString(getUserSubscriptionTier(username)))
+	isPro := slices.Contains([]string{"drive", "pro", "max"}, tier)
 
 	forceFirstFrameJpeg := !isPro && metaErr == nil && contentType == "image/gif"
 
@@ -501,6 +524,7 @@ func uploadPfpHandler(c *gin.Context) {
 	}
 
 	transformCache.Clear()
+	subscriptionCache = sync.Map{}
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "Success",
